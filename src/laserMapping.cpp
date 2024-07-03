@@ -173,8 +173,7 @@ geometry_msgs::msg::PoseStamped msg_body_pose;
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
 
-tf2_ros::Buffer tfbuffer{ std::make_shared<rclcpp::Clock>(RCL_ROS_TIME) };
-tf2_ros::TransformListener tflistener{ tfbuffer };
+shared_ptr<tf2_ros::Buffer> tfbuff_ptr;
 
 
 void SigHandle(int sig)
@@ -335,7 +334,7 @@ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::UniquePtr msg)
         try
         {
             const tf2::TimePoint tp{ std::chrono::seconds{msg->header.stamp.sec} + std::chrono::nanoseconds{msg->header.stamp.nanosec} };
-            const geometry_msgs::msg::TransformStamped tf = tfbuffer.lookupTransform(base_frame_id, msg->header.frame_id, tp);
+            const geometry_msgs::msg::TransformStamped tf = tfbuff_ptr->lookupTransform(base_frame_id, msg->header.frame_id, tp);
             tf2::doTransform(*msg, *msg, tf);
         }
         catch(const std::exception& e)
@@ -417,7 +416,7 @@ void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
         try
         {
             const tf2::TimePoint tp{ std::chrono::seconds{msg->header.stamp.sec} + std::chrono::nanoseconds{msg->header.stamp.nanosec} };
-            const geometry_msgs::msg::TransformStamped tf = tfbuffer.lookupTransform(base_frame_id, msg->header.frame_id, tp);
+            const geometry_msgs::msg::TransformStamped tf = tfbuff_ptr->lookupTransform(base_frame_id, msg->header.frame_id, tp);
             tf2::doTransform(*msg, *msg, tf);
         }
         catch(const std::exception& e)
@@ -861,8 +860,12 @@ class LaserMappingNode : public rclcpp::Node
 {
 public:
     LaserMappingNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions()) :
-        Node("laser_mapping", options)
+        Node("laser_mapping", options),
+        tfbuffer{ std::make_shared<tf2_ros::Buffer>( std::make_shared<rclcpp::Clock>(RCL_ROS_TIME) ) },
+        tflistener{ std::make_shared<tf2_ros::TransformListener>(*tfbuffer) }
     {
+        ::tfbuff_ptr = this->tfbuffer;
+
         this->declare_parameter<bool>("publish.path_en", true);
         this->declare_parameter<bool>("publish.effect_map_en", false);
         this->declare_parameter<bool>("publish.map_en", false);
@@ -1211,6 +1214,8 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl_pc_;
     // rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr sub_pcl_livox_;
 
+    std::shared_ptr<tf2_ros::Buffer> tfbuffer;
+    std::shared_ptr<tf2_ros::TransformListener> tflistener;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::TimerBase::SharedPtr map_pub_timer_;
@@ -1233,6 +1238,8 @@ int main(int argc, char** argv)
     signal(SIGINT, SigHandle);
 
     rclcpp::spin(std::make_shared<LaserMappingNode>());
+
+    // rclcpp::shutdown();
 
     if (rclcpp::ok())
         rclcpp::shutdown();
