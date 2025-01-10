@@ -576,18 +576,22 @@ void Preprocess::ms136_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &m
     pl_corn.reserve(plsize);
     pl_surf.reserve(plsize);
 
+    std::vector<uint64_t> us_stamps;
+    us_stamps.reserve(plsize);
+
     if(feature_enabled)
     {
         static constexpr size_t MS136_LAYER_COUNT = 16;
+        static constexpr size_t MS136_MAX_LAYER_POINTS = 2880;
         assert(MS136_LAYER_COUNT <= N_SCANS);
 
         for(size_t i = 0; i < MS136_LAYER_COUNT; i++)
         {
             pl_buff[i].clear();
-            pl_buff[i].reserve(plsize);
+            pl_buff[i].reserve(MS136_MAX_LAYER_POINTS);
         }
 
-        uint64_t base_seconds_count = 0;
+        uint64_t min_t_us = std::numeric_limits<uint64_t>::max();
         for(size_t i = 0; i < plsize; i++)
         {
             const auto& orig_pt = pl_orig.points[i];
@@ -605,12 +609,9 @@ void Preprocess::ms136_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &m
             added_pt.getVector3fMap() = orig_pt.getVector3fMap();
             // added_pt.intensity = orig_pt.i;
             // added_pt.getNormalVector3fMap() = Eigen::Vector3f::Zero();
-            const uint64_t t = orig_pt.t;
-                // (static_cast<uint64_t>(orig_pt.th) << 32 | static_cast<uint64_t>(orig_pt.tl));
-            if(i == 0) base_seconds_count = t / 1000000;
-            added_pt.curvature = static_cast<float>(
-                (static_cast<double>(t % 1000000) / 1000.)
-                    + ((t / 1000000) - base_seconds_count) );
+            us_stamps.push_back(orig_pt.t);
+            if(us_stamps.back() < min_t_us) min_t_us = us_stamps.back();
+            added_pt.curvature = static_cast<float>(us_stamps.size() - 1);  // float32 precision can handle the maximum number of points without rounding
         }
 
         for(size_t j = 0; j < MS136_LAYER_COUNT; j++)
@@ -629,6 +630,8 @@ void Preprocess::ms136_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &m
                 vy = pl[i].y - pl[i + 1].y;
                 vz = pl[i].z - pl[i + 1].z;
                 types[i].dista = vx * vx + vy * vy + vz * vz;
+
+                pl[i].curvature = static_cast<float>((us_stamps[static_cast<size_t>(pl[i].curvature)] - min_t_us) / 1000);
             }
             types[linesize].range = sqrt(pl[linesize].x * pl[linesize].x + pl[linesize].y * pl[linesize].y);
             give_feature(pl, types);
@@ -636,7 +639,7 @@ void Preprocess::ms136_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &m
     }
     else
     {
-        uint64_t base_seconds_count = 0;
+        uint64_t min_t_us = std::numeric_limits<uint64_t>::max();
         for(size_t i = 0; i < plsize; i++)
         {
             if(i % point_filter_num) continue;
@@ -650,12 +653,12 @@ void Preprocess::ms136_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &m
             added_pt.getVector3fMap() = orig_pt.getVector3fMap();
             // added_pt.intensity = orig_pt.i;
             // added_pt.getNormalVector3fMap() = Eigen::Vector3f::Zero();
-            const uint64_t t = orig_pt.t;
-                // (static_cast<uint64_t>(orig_pt.th) << 32 | static_cast<uint64_t>(orig_pt.tl));
-            if(i == 0) base_seconds_count = t / 1000000;
-            added_pt.curvature = static_cast<float>(
-                (static_cast<double>(t % 1000000) / 1000.)
-                    + ((t / 1000000) - base_seconds_count) );
+            us_stamps.push_back(orig_pt.t);
+            if(us_stamps.back() < min_t_us) min_t_us = us_stamps.back();
+        }
+        for(size_t i = 0; i < pl_surf.size(); i++)
+        {
+            pl_surf[i].curvature = static_cast<float>((us_stamps[i] - min_t_us) / 1000);
         }
     }
 }

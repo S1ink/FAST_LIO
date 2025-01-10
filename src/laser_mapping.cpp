@@ -74,6 +74,9 @@
 
 #include <so3_math.hpp>
 #include <ikd-Tree/ikd_Tree.h>
+#include <tsq.hpp>
+#include <util.hpp>
+#include <geometry.hpp>
 
 #include "imu_processing.hpp"
 #include "scan_preprocessing.hpp"
@@ -126,7 +129,7 @@ condition_variable sig_buffer;
 string root_dir = ROOT_DIR;
 string map_file_path, lid_topic, imu_topic;
 
-string odom_frame_id, base_frame_id;
+string odom_frame_id, base_frame_id, sensor_frame_id;
 bool apply_tf;
 
 double res_mean_last = 0.05, total_residual = 0.0;
@@ -146,9 +149,11 @@ vector<BoxPointType> cube_needrm;
 vector<PointVector>  Nearest_Points; 
 vector<double>       extrinT(3, 0.0);
 vector<double>       extrinR(9, 0.0);
-deque<double>                     time_buffer;
-deque<PointCloudType::Ptr>        lidar_buffer;
-deque<sensor_msgs::msg::Imu::ConstSharedPtr> imu_buffer;
+// deque<double>                     time_buffer;
+// deque<PointCloudType::Ptr>        lidar_buffer;
+// deque<sensor_msgs::msg::Imu::ConstSharedPtr> imu_buffer;
+util::tsq::TSQ<PointCloudType::Ptr> lidar_buffer;
+util::tsq::TSQ<sensor_msgs::msg::Imu::ConstSharedPtr> imu_buffer;
 
 PointCloudType::Ptr featsFromMap(new PointCloudType());
 PointCloudType::Ptr feats_undistort(new PointCloudType());
@@ -358,38 +363,43 @@ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::UniquePtr msg)
     scan_count ++;
     double cur_time = get_time_sec(msg->header.stamp);
     double preprocess_start_time = omp_get_wtime();
-    if (!is_first_lidar && cur_time < last_timestamp_lidar)
-    {
-        std::cerr << "lidar loop back, clear buffer (scan)" << std::endl;
-        lidar_buffer.clear();
-    }
+    // if (!is_first_lidar && cur_time < last_timestamp_lidar)
+    // {
+    //     std::cerr << "lidar loop back, clear buffer (scan)" << std::endl;
+    //     lidar_buffer.clear();
+    // }
     if (is_first_lidar)
     {
         is_first_lidar = false;
     }
 
-    if(apply_tf)
-    {
-        try
-        {
-            const tf2::TimePoint tp{
-                std::chrono::seconds{msg->header.stamp.sec} +
-                std::chrono::nanoseconds{msg->header.stamp.nanosec} };
-            const geometry_msgs::msg::TransformStamped tf =
-                tfbuff_ptr->lookupTransform(base_frame_id, msg->header.frame_id, tp);
-            tf2::doTransform(*msg, *msg, tf);
-        }
-        catch(const std::exception& e)
-        {
-            std::cerr << "pointcloud frame transform error: " << e.what() << std::endl;
-            return;
-        }
-    }
+    // if(apply_tf)
+    // {
+    //     try
+    //     {
+    //         const tf2::TimePoint tp{
+    //             std::chrono::seconds{msg->header.stamp.sec} +
+    //             std::chrono::nanoseconds{msg->header.stamp.nanosec} };
+    //         const geometry_msgs::msg::TransformStamped tf =
+    //             tfbuff_ptr->lookupTransform(base_frame_id, msg->header.frame_id, tp);
+    //         tf2::doTransform(*msg, *msg, tf);
+    //     }
+    //     catch(const std::exception& e)
+    //     {
+    //         std::cerr << "pointcloud frame transform error: " << e.what() << std::endl;
+    //         return;
+    //     }
+    // }
+    sensor_frame_id = msg->header.frame_id;
 
-    PointCloudType::Ptr  ptr(new PointCloudType());
+    PointCloudType::Ptr ptr(new PointCloudType());
     p_pre->process(msg, ptr);
-    lidar_buffer.push_back(ptr);
-    time_buffer.push_back(cur_time);
+
+    const size_t idx = util::tsq::binarySearchIdx(lidar_buffer, cur_time);
+    lidar_buffer.emplace(lidar_buffer.begin() + idx, cur_time, ptr);
+    // lidar_buffer.push_back(ptr);
+
+    // time_buffer.push_back(cur_time);
     last_timestamp_lidar = cur_time;
     s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
     mtx_buffer.unlock();
@@ -439,10 +449,9 @@ bool   timediff_set_flg = false;
 
 void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
 {
-    publish_count ++;
+    publish_count++;
     // cout<<"IMU got at: "<<msg_in->header.stamp.toSec()<<endl;
     sensor_msgs::msg::Imu::SharedPtr msg(new sensor_msgs::msg::Imu(*msg_in));
-    
 
     msg->header.stamp = get_ros_time(get_time_sec(msg_in->header.stamp) - time_diff_lidar_to_imu);
     if (abs(timediff_lidar_wrt_imu) > 0.1 && time_sync_en)
@@ -453,35 +462,37 @@ void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
 
     double timestamp = get_time_sec(msg->header.stamp);
 
-    if(apply_tf)
-    {
-        try
-        {
-            const tf2::TimePoint tp{
-                std::chrono::seconds{msg->header.stamp.sec} +
-                std::chrono::nanoseconds{msg->header.stamp.nanosec} };
-            const geometry_msgs::msg::TransformStamped tf =
-                tfbuff_ptr->lookupTransform(base_frame_id, msg->header.frame_id, tp);
-            tf2::doTransform(*msg, *msg, tf);
-        }
-        catch(const std::exception& e)
-        {
-            std::cerr << "imu frame transform error: " << e.what() << std::endl;
-            return;
-        }
-    }
+    // if(apply_tf)
+    // {
+    //     try
+    //     {
+    //         const tf2::TimePoint tp{
+    //             std::chrono::seconds{msg->header.stamp.sec} +
+    //             std::chrono::nanoseconds{msg->header.stamp.nanosec} };
+    //         const geometry_msgs::msg::TransformStamped tf =
+    //             tfbuff_ptr->lookupTransform(base_frame_id, msg->header.frame_id, tp);
+    //         tf2::doTransform(*msg, *msg, tf);
+    //     }
+    //     catch(const std::exception& e)
+    //     {
+    //         std::cerr << "imu frame transform error: " << e.what() << std::endl;
+    //         return;
+    //     }
+    // }
 
     mtx_buffer.lock();
 
-    if (timestamp < last_timestamp_imu)
-    {
-        std::cerr << "lidar loop back, clear buffer (imu) -- " << std::fmod(timestamp, 100.) << " vs " << std::fmod(last_timestamp_imu, 100) << std::endl;
-        imu_buffer.clear();
-    }
+    // if (timestamp < last_timestamp_imu)
+    // {
+    //     std::cerr << "lidar loop back, clear buffer (imu) -- " << std::fmod(timestamp, 100.) << " vs " << std::fmod(last_timestamp_imu, 100) << std::endl;
+    //     imu_buffer.clear();
+    // }
+    const size_t idx = util::tsq::binarySearchIdx(imu_buffer, timestamp);
+    imu_buffer.emplace(imu_buffer.begin() + idx, timestamp, msg);
 
     last_timestamp_imu = timestamp;
 
-    imu_buffer.push_back(msg);
+    // imu_buffer.push_back(msg);
     mtx_buffer.unlock();
     sig_buffer.notify_all();
 }
@@ -498,8 +509,9 @@ bool sync_packages(MeasureGroup &meas)
     /*** push a lidar scan ***/
     if(!lidar_pushed)
     {
-        meas.lidar = lidar_buffer.front();
-        meas.lidar_beg_time = time_buffer.front();
+        const auto& new_lidar = lidar_buffer.back();
+        meas.lidar = new_lidar.second;
+        meas.lidar_beg_time = new_lidar.first;
         if (meas.lidar->points.size() <= 1) // time too little
         {
             lidar_end_time = meas.lidar_beg_time + lidar_mean_scantime;
@@ -527,18 +539,20 @@ bool sync_packages(MeasureGroup &meas)
     }
 
     /*** push imu data, and pop from imu buffer ***/
-    double imu_time = get_time_sec(imu_buffer.front()->header.stamp);
+    double imu_time = imu_buffer.back().first;
     meas.imu.clear();
     while ((!imu_buffer.empty()) && (imu_time < lidar_end_time))
     {
-        imu_time = get_time_sec(imu_buffer.front()->header.stamp);
+        const auto& new_imu = imu_buffer.back();
+        imu_time = new_imu.first;
         if(imu_time > lidar_end_time) break;
-        meas.imu.push_back(imu_buffer.front());
-        imu_buffer.pop_front();
+
+        meas.imu.push_back(new_imu.second);
+        imu_buffer.pop_back();
     }
 
-    lidar_buffer.pop_front();
-    time_buffer.pop_front();
+    lidar_buffer.pop_back();
+    // time_buffer.pop_front();
     lidar_pushed = false;
     return true;
 }
@@ -678,7 +692,7 @@ void publish_frame_body(
     sensor_msgs::msg::PointCloud2 laserCloudmsg;
     pcl::toROSMsg(*laserCloudIMUBody, laserCloudmsg);
     laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
-    laserCloudmsg.header.frame_id = base_frame_id;
+    laserCloudmsg.header.frame_id = sensor_frame_id;
     pubLaserCloudFull_body->publish(laserCloudmsg);
     publish_count -= PUBFRAME_PERIOD;
 }
@@ -751,10 +765,28 @@ void publish_odometry(
     const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped,
     std::unique_ptr<tf2_ros::TransformBroadcaster> & tf_br )
 {
+    using namespace util::geom::cvt::ops;
+
+    set_posestamp(odomAftMapped.pose);
+    if(apply_tf)
+    {
+        try
+        {
+            const geometry_msgs::msg::TransformStamped tf =
+                tfbuff_ptr->lookupTransform(base_frame_id, sensor_frame_id, util::toTf2TimePoint(lidar_end_time) );
+
+            Eigen::Isometry3d full_tf, internal_tf;
+            odomAftMapped.pose.pose << ((full_tf << odomAftMapped.pose.pose) * (internal_tf << tf.transform).inverse());
+        }
+        catch(const std::exception& e)
+        {
+            std::cerr << e.what() << '\n';
+        }
+    }
+
     odomAftMapped.header.frame_id = odom_frame_id;
     odomAftMapped.child_frame_id = base_frame_id;
     odomAftMapped.header.stamp = get_ros_time(lidar_end_time);
-    set_posestamp(odomAftMapped.pose);
     pubOdomAftMapped->publish(odomAftMapped);
     auto P = kf.get_P();
     for (int i = 0; i < 6; i ++)
@@ -772,13 +804,7 @@ void publish_odometry(
     trans.header.frame_id = odom_frame_id;
     trans.child_frame_id = base_frame_id;
     trans.header.stamp = get_ros_time(lidar_end_time);
-    trans.transform.translation.x = odomAftMapped.pose.pose.position.x;
-    trans.transform.translation.y = odomAftMapped.pose.pose.position.y;
-    trans.transform.translation.z = odomAftMapped.pose.pose.position.z;
-    trans.transform.rotation.w = odomAftMapped.pose.pose.orientation.w;
-    trans.transform.rotation.x = odomAftMapped.pose.pose.orientation.x;
-    trans.transform.rotation.y = odomAftMapped.pose.pose.orientation.y;
-    trans.transform.rotation.z = odomAftMapped.pose.pose.orientation.z;
+    trans.transform << odomAftMapped.pose.pose;
     tf_br->sendTransform(trans);
 }
 

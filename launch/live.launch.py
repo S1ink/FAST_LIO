@@ -85,7 +85,7 @@ def generate_launch_description():
             'ros2', 'bag', 'play',
             LaunchConfiguration('bag', default=''),
             # '--loop',
-            # '--rate', '0.5',
+            '--rate', '2',
             '--topics', '/multiscan/lidar_scan', '/multiscan/imu', '/cardinal_perception/tags_detections',
             # '--start-offset', '248'
             # '--start-paused'
